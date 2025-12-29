@@ -1,0 +1,34 @@
+identity:
+  name: "dify-plugin-data-analyzer"
+  author: "luyike"
+  label:
+    en_US: "dify-plugin-data-analyzer"
+    zh_Hans: "dify-plugin-data-analyzer"
+    pt_BR: "dify-plugin-data-analyzer"
+    ja_JP: "dify-plugin-data-analyzer"
+description:
+  human:
+    en_US: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+    zh_Hans: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+    pt_BR: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+    ja_JP: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+  llm: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+parameters:
+  - name: query
+    type: string
+    required: true
+    label:
+      en_US: Query string
+      zh_Hans: 查询语句
+      pt_BR: Query string
+      ja_JP: クエリ文字列
+    human_description:
+      en_US: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+      zh_Hans: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+      pt_BR: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+      ja_JP: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+    llm_description: "Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution"
+    form: llm
+extra:
+  python:
+    source: tools/dify-plugin-data-analyzer.py
