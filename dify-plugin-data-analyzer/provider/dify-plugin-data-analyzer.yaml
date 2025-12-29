@@ -14,6 +14,121 @@ identity:
   icon: "icon.svg"
 
 #########################################################################################
+# LLM Configuration for Header Analysis
+#########################################################################################
+credentials_schema:
+  - name: "llm_api_key"
+    type: "secret-input"
+    required: false
+    label:
+      en_US: "LLM API Key"
+      zh_Hans: "LLM API密钥"
+      pt_BR: "Chave API LLM"
+      ja_JP: "LLM APIキー"
+    placeholder:
+      en_US: "Enter your OpenAI-compatible API key (optional, for header validation)"
+      zh_Hans: "输入OpenAI兼容的API密钥（可选，用于表头验证）"
+      pt_BR: "Digite sua chave de API compatível com OpenAI (opcional, para validação de cabeçalho)"
+      ja_JP: "OpenAI互換のAPIキーを入力（オプション、ヘッダー検証用）"
+    help:
+      en_US: "API key for OpenAI-compatible LLM service. Used for intelligent header validation. Leave empty to use rule-based analysis only."
+      zh_Hans: "OpenAI兼容的LLM服务API密钥。用于智能表头验证。留空则仅使用基于规则的分析。"
+      pt_BR: "Chave de API para serviço LLM compatível com OpenAI. Usado para validação inteligente de cabeçalho. Deixe vazio para usar apenas análise baseada em regras."
+      ja_JP: "OpenAI互換のLLMサービスのAPIキー。インテリジェントなヘッダー検証に使用。空欄の場合はルールベースの分析のみを使用。"
+  - name: "llm_base_url"
+    type: "text-input"
+    required: false
+    label:
+      en_US: "LLM Base URL"
+      zh_Hans: "LLM API地址"
+      pt_BR: "URL Base LLM"
+      ja_JP: "LLMベースURL"
+    placeholder:
+      en_US: "https://api.openai.com/v1/chat/completions"
+      zh_Hans: "https://api.openai.com/v1/chat/completions"
+      pt_BR: "https://api.openai.com/v1/chat/completions"
+      ja_JP: "https://api.openai.com/v1/chat/completions"
+    help:
+      en_US: "Base URL for OpenAI-compatible LLM API. Default: https://api.openai.com/v1/chat/completions"
+      zh_Hans: "OpenAI兼容的LLM API基础地址。默认：https://api.openai.com/v1/chat/completions"
+      pt_BR: "URL base para API LLM compatível com OpenAI. Padrão: https://api.openai.com/v1/chat/completions"
+      ja_JP: "OpenAI互換のLLM APIのベースURL。デフォルト：https://api.openai.com/v1/chat/completions"
+    default: "https://api.openai.com/v1/chat/completions"
+  - name: "llm_model"
+    type: "text-input"
+    required: false
+    label:
+      en_US: "LLM Model"
+      zh_Hans: "LLM模型"
+      pt_BR: "Modelo LLM"
+      ja_JP: "LLMモデル"
+    placeholder:
+      en_US: "gpt-4o-mini"
+      zh_Hans: "gpt-4o-mini"
+      pt_BR: "gpt-4o-mini"
+      ja_JP: "gpt-4o-mini"
+    help:
+      en_US: "Model name for LLM API. Default: gpt-4o-mini"
+      zh_Hans: "LLM API的模型名称。默认：gpt-4o-mini"
+      pt_BR: "Nome do modelo para API LLM. Padrão: gpt-4o-mini"
+      ja_JP: "LLM APIのモデル名。デフォルト：gpt-4o-mini"
+    default: "gpt-4o-mini"
+  - name: "analysis_api_url"
+    type: "text-input"
+    required: true
+    label:
+      en_US: "Analysis API URL"
+      zh_Hans: "数据分析API地址"
+      pt_BR: "URL da API de Análise"
+      ja_JP: "分析API URL"
+    placeholder:
+      en_US: "http://localhost:8118/v1/chat/completions"
+      zh_Hans: "http://localhost:8118/v1/chat/completions"
+      pt_BR: "http://localhost:8118/v1/chat/completions"
+      ja_JP: "http://localhost:8118/v1/chat/completions"
+    help:
+      en_US: "OpenAI-compatible API URL for data analysis. Required. Example: http://localhost:8118/v1/chat/completions"
+      zh_Hans: "用于数据分析的OpenAI兼容API地址。必填。示例：http://localhost:8118/v1/chat/completions"
+      pt_BR: "URL da API compatível com OpenAI para análise de dados. Obrigatório. Exemplo: http://localhost:8118/v1/chat/completions"
+      ja_JP: "データ分析用のOpenAI互換API URL。必須。例：http://localhost:8118/v1/chat/completions"
+  - name: "analysis_model"
+    type: "text-input"
+    required: true
+    label:
+      en_US: "Analysis Model"
+      zh_Hans: "分析模型"
+      pt_BR: "Modelo de Análise"
+      ja_JP: "分析モデル"
+    placeholder:
+      en_US: "DeepAnalyze-8B"
+      zh_Hans: "DeepAnalyze-8B"
+      pt_BR: "DeepAnalyze-8B"
+      ja_JP: "DeepAnalyze-8B"
+    help:
+      en_US: "Model name for data analysis. Required. Example: DeepAnalyze-8B"
+      zh_Hans: "用于数据分析的模型名称。必填。示例：DeepAnalyze-8B"
+      pt_BR: "Nome do modelo para análise de dados. Obrigatório. Exemplo: DeepAnalyze-8B"
+      ja_JP: "データ分析用のモデル名。必須。例：DeepAnalyze-8B"
+  - name: "analysis_api_key"
+    type: "secret-input"
+    required: false
+    label:
+      en_US: "Analysis API Key"
+      zh_Hans: "分析API密钥"
+      pt_BR: "Chave API de Análise"
+      ja_JP: "分析APIキー"
+    placeholder:
+      en_US: "Enter API key if required by your analysis API (optional)"
+      zh_Hans: "如果分析API需要，请输入API密钥（可选）"
+      pt_BR: "Digite a chave de API se necessário para sua API de análise (opcional)"
+      ja_JP: "分析APIで必要な場合はAPIキーを入力（オプション）"
+    help:
+      en_US: "API key for analysis API if authentication is required. Optional, some APIs may not require it."
+      zh_Hans: "如果分析API需要认证，请输入API密钥。可选，某些API可能不需要。"
+      pt_BR: "Chave de API para API de análise se autenticação for necessária. Opcional, algumas APIs podem não exigir."
+      ja_JP: "分析APIで認証が必要な場合のAPIキー。オプション、一部のAPIでは不要な場合があります。"
+
+#########################################################################################
 # If you want to support OAuth, you can uncomment the following code.
 #########################################################################################
 # oauth_schema:

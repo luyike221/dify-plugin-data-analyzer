@@ -29,16 +29,9 @@ else:
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 # API Configuration
-# 从环境变量读取外部 LLM API URL，默认使用外部服务
-VLLM_API_URL = os.environ.get("VLLM_API_URL", "http://9.1.47.89:8118/v1/chat/completions")
-
-# 提取 base URL
-if VLLM_API_URL.endswith("/chat/completions"):
-    API_BASE = VLLM_API_URL.rsplit("/chat/completions", 1)[0]
-else:
-    API_BASE = VLLM_API_URL.rsplit("/v1", 1)[0] + "/v1" if "/v1" in VLLM_API_URL else VLLM_API_URL
-
-MODEL_PATH = os.environ.get("VLLM_MODEL_NAME", "DeepAnalyze-8B")
+# 注意：数据分析 API 配置现在从 provider credentials 获取，不再从环境变量读取
+# 这些配置是必选的，必须在 provider 中配置
+# VLLM_API_URL 和 MODEL_PATH 已移除，使用传入的参数代替
 # Workspace directory relative to plugin root
 WORKSPACE_BASE_DIR = os.path.join(Path(__file__).parent.parent, "workspace")
 

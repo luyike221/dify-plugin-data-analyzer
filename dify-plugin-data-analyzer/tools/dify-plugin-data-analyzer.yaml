@@ -44,6 +44,22 @@ parameters:
       ja_JP: "オプション：データ分析のカスタム分析プロンプトまたはクエリ"
     llm_description: "Optional custom analysis prompt. If not provided, default comprehensive analysis will be performed."
     form: llm
+  - name: use_llm_header_validation
+    type: boolean
+    required: false
+    default: true
+    label:
+      en_US: "Enable LLM Header Validation"
+      zh_Hans: "启用LLM表头验证"
+      pt_BR: "Habilitar Validação de Cabeçalho LLM"
+      ja_JP: "LLMヘッダー検証を有効にする"
+    human_description:
+      en_US: "Enable LLM-based header validation for more accurate header analysis. Requires LLM API key configured in provider settings."
+      zh_Hans: "启用基于LLM的表头验证，提高表头分析准确性。需要在提供者设置中配置LLM API密钥。"
+      pt_BR: "Habilite a validação de cabeçalho baseada em LLM para análise de cabeçalho mais precisa. Requer chave de API LLM configurada nas configurações do provedor."
+      ja_JP: "より正確なヘッダー分析のためにLLMベースのヘッダー検証を有効にします。プロバイダー設定でLLM APIキーの設定が必要です。"
+    llm_description: "Whether to use LLM for header validation. Default: true. Requires LLM API key in provider credentials."
+    form: form
 extra:
   python:
     source: tools/dify-plugin-data-analyzer.py

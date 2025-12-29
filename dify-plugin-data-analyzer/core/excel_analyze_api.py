@@ -17,13 +17,15 @@ from typing import List, Optional, Dict, Any
 import openai
 
 from .config import (
-    API_BASE, DEFAULT_TEMPERATURE, STOP_TOKEN_IDS, MAX_NEW_TOKENS,
+    DEFAULT_TEMPERATURE, STOP_TOKEN_IDS, MAX_NEW_TOKENS,
     EXCEL_VALID_EXTENSIONS, EXCEL_MAX_FILE_SIZE_MB,
     EXCEL_LLM_API_KEY, EXCEL_LLM_BASE_URL, EXCEL_LLM_MODEL,
     DEFAULT_EXCEL_ANALYSIS_PROMPT
 )
-# Models are no longer used as Pydantic models, but kept for type reference if needed
-# from .models import ExcelAnalyzeResponse, HeaderAnalysisResponse, ProcessedFileInfo, ExcelSheetsResponse
+# Import ProcessedFileInfo as it's still used in the code
+from .models import ProcessedFileInfo
+# Other models are no longer used as Pydantic models, but kept for type reference if needed
+# from .models import ExcelAnalyzeResponse, HeaderAnalysisResponse, ExcelSheetsResponse
 from .storage import storage
 from .utils import (
     get_thread_workspace, build_file_path, WorkspaceTracker,
@@ -42,10 +44,15 @@ plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False    
 """
 
-# Initialize OpenAI clients for vllm
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "dummy")
-vllm_client = openai.OpenAI(base_url=API_BASE, api_key=OPENAI_API_KEY)
-vllm_client_async = openai.AsyncOpenAI(base_url=API_BASE, api_key=OPENAI_API_KEY)
+# Helper function to extract base URL from full API URL
+def extract_api_base(api_url: str) -> str:
+    """从完整的API URL中提取base URL"""
+    if api_url.endswith("/chat/completions"):
+        return api_url.rsplit("/chat/completions", 1)[0]
+    elif "/v1" in api_url:
+        return api_url.rsplit("/v1", 1)[0] + "/v1"
+    else:
+        return api_url
 
 
 def validate_excel_file(filename: str, file_size: int) -> None:
@@ -88,6 +95,8 @@ async def run_data_analysis(
     analysis_prompt: str,
     model: str,
     temperature: float,
+    analysis_api_url: str,
+    analysis_api_key: Optional[str] = None,
     stream: bool = False
 ) -> Dict[str, Any]:
     """
@@ -116,19 +125,74 @@ async def run_data_analysis(
     assistant_reply = ""
     finished = False
     
+    # 验证 API URL 格式
+    if not analysis_api_url:
+        raise ValueError("analysis_api_url 不能为空")
+    
+    if not (analysis_api_url.startswith("http://") or analysis_api_url.startswith("https://")):
+        raise ValueError(f"analysis_api_url 格式不正确，必须以 http:// 或 https:// 开头: {analysis_api_url}")
+    
+    # 创建分析 API 客户端
+    try:
+        api_base = extract_api_base(analysis_api_url)
+        api_key = analysis_api_key or "dummy"
+        analysis_client_async = openai.AsyncOpenAI(base_url=api_base, api_key=api_key, timeout=60.0)
+    except Exception as e:
+        raise ValueError(f"创建分析 API 客户端失败: {str(e)}。请检查 analysis_api_url 配置: {analysis_api_url}")
+    
     while not finished:
-        # 调用vLLM API
-        response = await vllm_client_async.chat.completions.create(
-            model=model,
-            messages=vllm_messages,
-            temperature=temperature,
-            stream=True,
-            extra_body={
-                "add_generation_prompt": False,
-                "stop_token_ids": STOP_TOKEN_IDS,
-                "max_new_tokens": MAX_NEW_TOKENS,
-            },
-        )
+        # 调用分析 API
+        try:
+            response = await analysis_client_async.chat.completions.create(
+                model=model,
+                messages=vllm_messages,
+                temperature=temperature,
+                stream=True,
+                extra_body={
+                    "add_generation_prompt": False,
+                    "stop_token_ids": STOP_TOKEN_IDS,
+                    "max_new_tokens": MAX_NEW_TOKENS,
+                },
+            )
+        except openai.APIConnectionError as e:
+            error_msg = (
+                f"❌ **连接分析 API 失败**\n\n"
+                f"**错误详情：** {str(e)}\n\n"
+                f"**可能的原因：**\n"
+                f"1. 分析 API 服务未启动或无法访问\n"
+                f"2. API 地址配置错误: `{analysis_api_url}`\n"
+                f"3. 网络连接问题（防火墙、代理等）\n"
+                f"4. API 服务地址不正确或端口未开放\n\n"
+                f"**解决方法：**\n"
+                f"1. 确认分析 API 服务正在运行\n"
+                f"2. 检查 API 地址是否正确: `{analysis_api_url}`\n"
+                f"3. 尝试在浏览器或命令行中访问该地址\n"
+                f"4. 检查网络连接和防火墙设置\n"
+                f"5. 如果使用 localhost，确保服务在正确的端口上运行\n"
+            )
+            raise ConnectionError(error_msg) from e
+        except openai.APIError as e:
+            error_msg = (
+                f"❌ **分析 API 调用失败**\n\n"
+                f"**错误详情：** {str(e)}\n\n"
+                f"**API 地址：** {analysis_api_url}\n"
+                f"**模型：** {model}\n\n"
+                f"**可能的原因：**\n"
+                f"1. API 密钥无效或过期\n"
+                f"2. 模型名称不正确\n"
+                f"3. API 服务返回错误\n"
+                f"4. 请求参数不合法\n"
+            )
+            raise ValueError(error_msg) from e
+        except Exception as e:
+            error_msg = (
+                f"❌ **调用分析 API 时发生未知错误**\n\n"
+                f"**错误类型：** {type(e).__name__}\n"
+                f"**错误详情：** {str(e)}\n\n"
+                f"**API 地址：** {analysis_api_url}\n"
+                f"**模型：** {model}\n"
+            )
+            raise RuntimeError(error_msg) from e
         
         cur_res = ""
         last_finish_reason = None
@@ -187,14 +251,19 @@ async def run_data_analysis(
 async def analyze_excel(
     file_content: bytes,
     filename: str,
+    analysis_api_url: str,
+    analysis_model: str,
     thread_id: Optional[str] = None,
     use_llm_validate: bool = False,
     sheet_name: Optional[str] = None,
     auto_analysis: bool = True,
     analysis_prompt: Optional[str] = None,
     stream: bool = False,
-    model: str = "DeepAnalyze-8B",
-    temperature: float = DEFAULT_TEMPERATURE
+    temperature: float = DEFAULT_TEMPERATURE,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    analysis_api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Excel智能分析函数
@@ -210,12 +279,17 @@ async def analyze_excel(
     - file_content: Excel文件内容（bytes）
     - filename: 文件名
     - thread_id: 会话ID（可选，不提供则创建新会话）
-    - use_llm_validate: 是否使用LLM验证规则分析结果（可选，默认False，LLM配置从.env读取）
+    - use_llm_validate: 是否使用LLM验证规则分析结果（可选，默认False）
+    - llm_api_key: LLM API密钥（可选）
+    - llm_base_url: LLM API地址（可选）
+    - llm_model: LLM模型名称（可选）
     - sheet_name: 工作表名称（可选，默认第一个）
     - auto_analysis: 是否自动分析（可选，默认True）
     - analysis_prompt: 自定义分析提示词（可选）
     - stream: 是否流式返回（可选，默认False，当前不支持流式）
-    - model: 分析使用的模型（默认DeepAnalyze-8B）
+    - analysis_api_url: 数据分析API地址（必填）
+    - analysis_model: 数据分析模型名称（必填）
+    - analysis_api_key: 数据分析API密钥（可选）
     - temperature: 生成温度（默认0.4）
     
     返回：
@@ -240,17 +314,20 @@ async def analyze_excel(
         # 获取可用工作表
         available_sheets = get_sheet_names(excel_path)
         
-        # 检查LLM配置（从.env读取）
-        if use_llm_validate and not EXCEL_LLM_API_KEY:
+        # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
+        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+        if use_llm_validate and not api_key:
             use_llm_validate = False  # 没有API key则不进行LLM验证
         
         # 处理Excel文件（先规则分析，再用LLM验证）
-        # LLM配置从.env自动读取，不需要传递参数
         process_result = process_excel_file(
             filepath=excel_path,
             output_dir=workspace_dir,
             sheet_name=sheet_name,
-            use_llm_validate=use_llm_validate
+            use_llm_validate=use_llm_validate,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model
         )
         
         if not process_result.success:
@@ -277,7 +354,8 @@ async def analyze_excel(
             meta_filename = os.path.basename(process_result.metadata_file_path)
             metadata_file_info = ProcessedFileInfo(
                 filename=meta_filename,
-                url=build_download_url(current_thread_id, meta_filename)
+                url=build_file_path(current_thread_id, meta_filename),
+                size_bytes=os.path.getsize(process_result.metadata_file_path) if os.path.exists(process_result.metadata_file_path) else None
             )
         
         # 构建表头分析响应
@@ -312,8 +390,10 @@ async def analyze_excel(
                 thread_id=current_thread_id,
                 process_result=process_result,
                 analysis_prompt=prompt,
-                model=model,
+                model=analysis_model,
                 temperature=temperature,
+                analysis_api_url=analysis_api_url,
+                analysis_api_key=analysis_api_key,
                 stream=False
             )
         
@@ -384,7 +464,10 @@ async def process_excel_only(
     filename: str,
     thread_id: Optional[str] = None,
     use_llm_validate: bool = False,
-    sheet_name: Optional[str] = None
+    sheet_name: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     仅处理Excel文件（不进行数据分析）
@@ -409,17 +492,20 @@ async def process_excel_only(
         # 获取可用工作表
         available_sheets = get_sheet_names(excel_path)
         
-        # 检查LLM配置（从.env读取）
-        if use_llm_validate and not EXCEL_LLM_API_KEY:
+        # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
+        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+        if use_llm_validate and not api_key:
             use_llm_validate = False
         
         # 处理Excel文件（先规则分析，再用LLM验证）
-        # LLM配置从.env自动读取，不需要传递参数
         process_result = process_excel_file(
             filepath=excel_path,
             output_dir=workspace_dir,
             sheet_name=sheet_name,
-            use_llm_validate=use_llm_validate
+            use_llm_validate=use_llm_validate,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model
         )
         
         if not process_result.success:
@@ -492,14 +578,25 @@ async def process_excel_only(
 async def continue_analysis(
     thread_id: str,
     prompt: str,
-    model: str = "DeepAnalyze-8B",
+    analysis_api_url: str,
+    analysis_model: str,
     temperature: float = DEFAULT_TEMPERATURE,
-    stream: bool = False
+    stream: bool = False,
+    analysis_api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     在已有会话中继续分析
     
     用于对已处理的数据进行后续分析
+    
+    参数:
+    - thread_id: 会话ID（必填）
+    - prompt: 分析提示词（必填）
+    - analysis_api_url: 数据分析API地址（必填）
+    - analysis_model: 数据分析模型名称（必填）
+    - temperature: 生成温度（默认0.4）
+    - stream: 是否流式返回（当前不支持，将被忽略）
+    - analysis_api_key: 数据分析API密钥（可选）
     
     注意：stream 参数当前不支持，将被忽略
     """
@@ -528,9 +625,14 @@ async def continue_analysis(
     assistant_reply = ""
     finished = False
     
+    # 创建分析 API 客户端
+    api_base = extract_api_base(analysis_api_url)
+    api_key = analysis_api_key or "dummy"
+    analysis_client_async = openai.AsyncOpenAI(base_url=api_base, api_key=api_key)
+    
     while not finished:
-        response = await vllm_client_async.chat.completions.create(
-            model=model,
+        response = await analysis_client_async.chat.completions.create(
+            model=analysis_model,
             messages=vllm_messages,
             temperature=temperature,
             stream=True,

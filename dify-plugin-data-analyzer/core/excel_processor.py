@@ -130,13 +130,18 @@ class SmartHeaderProcessor:
                 })
         return merged_info
     
-    def validate_with_llm(self, rule_analysis: HeaderAnalysis) -> HeaderAnalysis:
+    def validate_with_llm(self, rule_analysis: HeaderAnalysis, 
+                         llm_api_key: Optional[str] = None,
+                         llm_base_url: Optional[str] = None,
+                         llm_model: Optional[str] = None) -> HeaderAnalysis:
         """
         使用LLM验证规则分析的结果
-        LLM配置从环境变量或config中读取
         
         参数:
             rule_analysis: 规则分析的结果
+            llm_api_key: LLM API密钥（可选）
+            llm_base_url: LLM API地址（可选）
+            llm_model: LLM模型名称（可选）
         
         返回:
             验证后的分析结果（如果LLM验证失败，返回原规则分析结果）
@@ -147,8 +152,8 @@ class SmartHeaderProcessor:
         # 构建验证提示词
         prompt = self._build_validation_prompt(preview_data, merged_info, rule_analysis)
         
-        # 调用LLM（从配置读取参数）
-        result = self._call_llm(prompt)
+        # 调用LLM（使用传入的配置或从全局配置读取）
+        result = self._call_llm(prompt, llm_api_key, llm_base_url, llm_model)
         
         # 解析LLM验证结果
         validated = self._parse_validation_response(result, rule_analysis)
@@ -206,14 +211,20 @@ class SmartHeaderProcessor:
         
         return prompt
     
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, llm_api_key: Optional[str] = None, 
+                  llm_base_url: Optional[str] = None, llm_model: Optional[str] = None) -> str:
         """调用LLM API（支持OpenAI兼容接口）
-        LLM配置从环境变量或config中读取
+        
+        参数:
+            prompt: 提示词
+            llm_api_key: LLM API密钥（可选，如果不提供则从配置读取）
+            llm_base_url: LLM API地址（可选，如果不提供则从配置读取）
+            llm_model: LLM模型名称（可选，如果不提供则从配置读取）
         """
-        # 从配置读取LLM参数
-        api_key = EXCEL_LLM_API_KEY
-        base_url = EXCEL_LLM_BASE_URL
-        model = EXCEL_LLM_MODEL
+        # 优先使用传入的参数，否则从配置读取
+        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+        base_url = llm_base_url if llm_base_url is not None else EXCEL_LLM_BASE_URL
+        model = llm_model if llm_model is not None else EXCEL_LLM_MODEL
         
         if not api_key:
             return None
@@ -413,13 +424,19 @@ class SmartHeaderProcessor:
             counts[name] += 1
         return result
     
-    def to_dataframe(self, analysis: HeaderAnalysis = None, use_llm_validate: bool = False) -> Tuple[pd.DataFrame, HeaderAnalysis, Dict[str, Dict]]:
+    def to_dataframe(self, analysis: HeaderAnalysis = None, use_llm_validate: bool = False,
+                    llm_api_key: Optional[str] = None,
+                    llm_base_url: Optional[str] = None,
+                    llm_model: Optional[str] = None) -> Tuple[pd.DataFrame, HeaderAnalysis, Dict[str, Dict]]:
         """
         转换为DataFrame
         
         参数:
             analysis: 预先的分析结果，如果为None则自动分析
-            use_llm_validate: 是否使用LLM验证规则分析结果（LLM配置从.env读取）
+            use_llm_validate: 是否使用LLM验证规则分析结果
+            llm_api_key: LLM API密钥（可选）
+            llm_base_url: LLM API地址（可选）
+            llm_model: LLM模型名称（可选）
         
         返回:
             (DataFrame, 分析结果, 列结构元数据)
@@ -429,8 +446,10 @@ class SmartHeaderProcessor:
             analysis = self.analyze_with_rules()
             
             # 如果启用LLM验证，用LLM验证规则分析结果
-            if use_llm_validate and EXCEL_LLM_API_KEY:
-                analysis = self.validate_with_llm(analysis)
+            # 优先使用传入的配置，否则使用全局配置
+            api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+            if use_llm_validate and api_key:
+                analysis = self.validate_with_llm(analysis, llm_api_key, llm_base_url, llm_model)
         
         headers, column_metadata = self.extract_headers(analysis)
         
@@ -459,7 +478,10 @@ def process_excel_file(
     output_dir: str,
     sheet_name: str = None,
     use_llm_validate: bool = False,
-    output_filename: str = None
+    output_filename: str = None,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model: Optional[str] = None
 ) -> ExcelProcessResult:
     """
     处理Excel文件的主函数
@@ -468,8 +490,11 @@ def process_excel_file(
         filepath: Excel文件路径
         output_dir: 输出目录
         sheet_name: 工作表名称
-        use_llm_validate: 是否使用LLM验证规则分析结果（LLM配置从.env读取）
+        use_llm_validate: 是否使用LLM验证规则分析结果
         output_filename: 输出文件名（不含扩展名）
+        llm_api_key: LLM API密钥（可选）
+        llm_base_url: LLM API地址（可选）
+        llm_model: LLM模型名称（可选）
     
     返回:
         ExcelProcessResult
@@ -481,7 +506,10 @@ def process_excel_file(
         # 处理Excel
         processor = SmartHeaderProcessor(filepath, sheet_name)
         df, analysis, column_metadata = processor.to_dataframe(
-            use_llm_validate=use_llm_validate
+            use_llm_validate=use_llm_validate,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model
         )
         processor.close()
         

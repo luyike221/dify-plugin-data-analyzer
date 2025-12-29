@@ -476,11 +476,9 @@ def render_file_block(
             rel = Path(p).resolve().relative_to(Path(workspace_dir).resolve()).as_posix()
         except Exception:
             rel = Path(p).name
-        url = build_download_url(thread_id, rel)
+        url = build_file_path(thread_id, rel)
         name = Path(p).name
         if generated_files_sink is not None :
             if {"name": name, "url": url} not in generated_files_sink:
                 generated_files_sink.append({"name": name, "url": url})
     return ""
-
-            httpd.shutdown()
