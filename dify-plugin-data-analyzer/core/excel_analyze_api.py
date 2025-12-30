@@ -13,7 +13,7 @@ import uuid
 import shutil
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, AsyncGenerator
 
 import openai
 
@@ -41,11 +41,44 @@ from .excel_processor import (
     ExcelProcessResult
 )
 
-# matplotlib中文支持代码
+# matplotlib中文支持代码 - 自动检测可用的中文字体
 Chinese_matplot_str = """
 import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['SimHei'] 
-plt.rcParams['axes.unicode_minus'] = False    
+import matplotlib.font_manager as fm
+import warnings
+
+# 尝试的中文字体列表（按优先级排序）
+chinese_fonts = [
+    'SimHei',           # Windows 黑体
+    'Microsoft YaHei',  # Windows 微软雅黑
+    'WenQuanYi Micro Hei',  # Linux 文泉驿微米黑
+    'WenQuanYi Zen Hei',    # Linux 文泉驿正黑
+    'Noto Sans CJK SC',      # Google Noto 字体
+    'Source Han Sans CN',    # 思源黑体
+    'STHeiti',          # macOS 黑体
+    'Arial Unicode MS', # 通用 Unicode 字体
+]
+
+# 获取所有可用字体
+available_fonts = [f.name for f in fm.fontManager.ttflist]
+
+# 查找第一个可用的中文字体
+chinese_font = None
+for font in chinese_fonts:
+    if font in available_fonts:
+        chinese_font = font
+        break
+
+# 如果找到中文字体，使用它；否则使用默认字体并忽略警告
+if chinese_font:
+    plt.rcParams['font.sans-serif'] = [chinese_font] + plt.rcParams['font.sans-serif']
+else:
+    # 如果没有找到中文字体，使用默认字体并忽略字体警告
+    warnings.filterwarnings('ignore', category=UserWarning, message='.*Glyph.*missing.*')
+    # 尝试使用 DejaVu Sans 作为后备（虽然不支持中文，但至少不会报错）
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans'] + plt.rcParams['font.sans-serif']
+
+plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 """
 
 # Helper function to extract base URL from full API URL
@@ -77,14 +110,46 @@ def validate_excel_file(filename: str, file_size: int) -> None:
 
 
 def get_or_create_thread(thread_id: Optional[str]) -> tuple:
-    """获取或创建会话"""
+    """获取或创建会话
+    
+    如果提供了thread_id但会话不存在，会创建新会话并使用该thread_id
+    """
     if thread_id:
-        # 使用已有会话
+        # 尝试使用已有会话
         thread = storage.get_thread(thread_id)
-        if not thread:
-            raise ValueError(f"会话 {thread_id} 不存在")
-        workspace_dir = get_thread_workspace(thread_id)
-        return thread_id, workspace_dir, False  # False表示非新建
+        if thread:
+            # 会话存在，使用它
+            workspace_dir = get_thread_workspace(thread_id)
+            return thread_id, workspace_dir, False  # False表示非新建
+        else:
+            # 会话不存在，创建新会话并使用传入的thread_id
+            logger.info(f"会话 {thread_id} 不存在，创建新会话并使用该ID")
+            
+            # 手动创建会话记录（因为storage.create_thread会自动生成ID）
+            now = int(time.time())
+            
+            # 创建会话数据
+            thread_data = {
+                "id": thread_id,
+                "object": "thread",
+                "created_at": now,
+                "last_accessed_at": now,
+                "metadata": {"type": "excel_analysis", "dify_conversation_id": thread_id},
+                "file_ids": [],
+                "tool_resources": None,
+            }
+            
+            # 添加到storage
+            with storage._lock:
+                storage.threads[thread_id] = thread_data
+                storage.messages[thread_id] = []
+            
+            # 创建工作空间
+            workspace_dir = get_thread_workspace(thread_id)
+            os.makedirs(workspace_dir, exist_ok=True)
+            os.makedirs(os.path.join(workspace_dir, "generated"), exist_ok=True)
+            
+            return thread_id, workspace_dir, True  # True表示新建
     else:
         # 创建新会话
         thread = storage.create_thread(metadata={"type": "excel_analysis"})
@@ -301,14 +366,7 @@ async def run_data_analysis(
                 logger.warning("⚠️ 无法提取代码，结束对话")
                 finished = True
     
-    # 生成报告
-    logger.info("")
-    logger.info("📄 生成分析报告...")
-    report_block = generate_report_from_messages(
-        messages, assistant_reply, workspace_dir, thread_id, generated_files
-    )
-    logger.info("✅ 报告生成完成")
-    
+    # 不再生成分析报告
     logger.info("")
     logger.info("=" * 60)
     logger.info("🎉 数据分析完成")
@@ -319,7 +377,7 @@ async def run_data_analysis(
     return {
         "reasoning": assistant_reply,
         "generated_files": generated_files,
-        "report": report_block
+        "report": ""  # 不再生成报告
     }
 
 
@@ -768,4 +826,327 @@ async def continue_analysis(
         "reasoning": assistant_reply,
         "generated_files": generated_files
     }
+
+
+# ============================================================================
+# 流式输出版本的函数
+# ============================================================================
+
+async def run_data_analysis_stream(
+    workspace_dir: str,
+    thread_id: str,
+    process_result: ExcelProcessResult,
+    analysis_prompt: str,
+    model: str,
+    temperature: float,
+    analysis_api_url: str,
+    analysis_api_key: Optional[str] = None
+) -> AsyncGenerator[str, None]:
+    """
+    执行数据分析流程 - 流式版本
+    
+    逐步 yield 处理进度和 LLM 响应
+    
+    参数:
+        workspace_dir: 工作空间目录
+        thread_id: 会话ID
+        process_result: Excel处理结果
+        analysis_prompt: 分析提示词
+        model: 模型名称
+        temperature: 温度参数
+        analysis_api_url: 分析API地址
+        analysis_api_key: 分析API密钥
+    
+    Yields:
+        str: 流式输出的字符串块
+    """
+    generated_dir = os.path.join(workspace_dir, "generated")
+    os.makedirs(generated_dir, exist_ok=True)
+    
+    # 构建分析提示词
+    full_prompt = generate_analysis_prompt(process_result, analysis_prompt)
+    
+    # 构建消息
+    messages = [{"role": "user", "content": full_prompt}]
+    
+    # 准备vLLM消息格式
+    workspace_file_info = collect_file_info(workspace_dir)
+    vllm_messages = [{
+        "role": "user",
+        "content": f"# Instruction\n{full_prompt}\n\n# Data\n{workspace_file_info}"
+    }]
+    
+    # 跟踪生成的文件
+    generated_files = []
+    tracker = WorkspaceTracker(workspace_dir, generated_dir)
+    
+    assistant_reply = ""
+    finished = False
+    
+    # 验证 API URL 格式
+    if not analysis_api_url:
+        yield "❌ **错误**: analysis_api_url 不能为空\n"
+        return
+    
+    if not (analysis_api_url.startswith("http://") or analysis_api_url.startswith("https://")):
+        yield f"❌ **错误**: analysis_api_url 格式不正确: {analysis_api_url}\n"
+        return
+    
+    # 创建分析 API 客户端
+    try:
+        api_base = extract_api_base(analysis_api_url)
+        api_key = analysis_api_key or "dummy"
+        analysis_client_async = openai.AsyncOpenAI(base_url=api_base, api_key=api_key, timeout=60.0)
+    except Exception as e:
+        yield f"❌ **错误**: 创建分析 API 客户端失败: {str(e)}\n"
+        return
+    
+    round_num = 1
+    while not finished:
+        yield f"\n{'='*50}\n"
+        yield f"📊 **分析轮次 {round_num}**\n"
+        yield f"{'='*50}\n\n"
+        
+        # 调用分析 API
+        logger.info(f"🤖 调用大模型 API - 轮次 {round_num}")
+        
+        try:
+            response = await analysis_client_async.chat.completions.create(
+                model=model,
+                messages=vllm_messages,
+                temperature=temperature,
+                stream=True,
+                extra_body={
+                    "add_generation_prompt": False,
+                    "stop_token_ids": STOP_TOKEN_IDS,
+                    "max_new_tokens": MAX_NEW_TOKENS,
+                },
+            )
+        except openai.APIConnectionError as e:
+            yield f"❌ **连接分析 API 失败**: {str(e)}\n"
+            yield f"请检查 API 地址: {analysis_api_url}\n"
+            return
+        except openai.APIError as e:
+            yield f"❌ **API 调用失败**: {str(e)}\n"
+            return
+        except Exception as e:
+            yield f"❌ **未知错误**: {str(e)}\n"
+            return
+        
+        cur_res = ""
+        last_finish_reason = None
+        
+        # 流式输出 LLM 响应
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content is not None:
+                delta = chunk.choices[0].delta.content
+                cur_res += delta
+                assistant_reply += delta
+                yield delta  # 实时输出每个 token
+            
+            if chunk.choices and chunk.choices[0].finish_reason:
+                last_finish_reason = chunk.choices[0].finish_reason
+            
+            if "</Answer>" in cur_res:
+                finished = True
+                break
+        
+        has_code_segment = "<Code>" in cur_res
+        has_closed_code = "</Code>" in cur_res
+        
+        if last_finish_reason == "stop" and not finished:
+            if has_code_segment and not has_closed_code:
+                cur_res += "</Code>"
+                assistant_reply += "</Code>"
+                yield "</Code>"
+                has_closed_code = True
+            elif not has_code_segment:
+                finished = True
+        
+        if "</Answer>" in cur_res:
+            finished = True
+        
+        # 执行代码
+        if has_code_segment and has_closed_code and not finished:
+            yield "\n\n"
+            yield "▶️ **检测到代码段，开始执行...**\n\n"
+            
+            vllm_messages.append({"role": "assistant", "content": cur_res})
+            code_str = extract_code_from_segment(cur_res)
+            
+            if code_str:
+                code_str = Chinese_matplot_str + "\n" + code_str
+                
+                yield "⏳ 正在执行代码...\n"
+                exe_output = await execute_code_safe_async(code_str, workspace_dir)
+                
+                yield "\n📊 **执行结果:**\n"
+                yield f"```\n{exe_output}\n```\n"
+                
+                artifacts = tracker.diff_and_collect()
+                if artifacts:
+                    yield f"\n📁 **生成的文件** ({len(artifacts)}个):\n"
+                    for artifact in artifacts:
+                        yield f"   - {artifact.name}\n"
+                
+                exe_str = f"\n<Execute>\n```\n{exe_output}\n```\n</Execute>\n"
+                render_file_block(artifacts, workspace_dir, thread_id, generated_files)
+                assistant_reply += exe_str
+                vllm_messages.append({"role": "execute", "content": exe_output})
+            else:
+                yield "⚠️ 无法提取代码，结束分析\n"
+                finished = True
+        
+        round_num += 1
+        
+        # 防止无限循环
+        if round_num > 10:
+            yield "\n⚠️ 达到最大轮次限制，结束分析\n"
+            finished = True
+    
+    # 不再生成分析报告
+    # 返回最终生成的文件列表（仅代码执行生成的文件）
+    if generated_files:
+        yield f"\n📁 **所有生成的文件:**\n"
+        for file_info in generated_files:
+            yield f"   - {file_info.get('name', 'N/A')}\n"
+
+
+async def analyze_excel_stream(
+    file_content: bytes,
+    filename: str,
+    analysis_api_url: str,
+    analysis_model: str,
+    thread_id: Optional[str] = None,
+    use_llm_validate: bool = False,
+    sheet_name: Optional[str] = None,
+    auto_analysis: bool = True,
+    analysis_prompt: Optional[str] = None,
+    temperature: float = DEFAULT_TEMPERATURE,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    analysis_api_key: Optional[str] = None
+) -> AsyncGenerator[str, None]:
+    """
+    Excel智能分析函数 - 流式版本
+    
+    使用 async generator 逐步 yield 处理进度和结果
+    
+    参数：
+    - file_content: Excel文件内容（bytes）
+    - filename: 文件名
+    - analysis_api_url: 数据分析API地址（必填）
+    - analysis_model: 数据分析模型名称（必填）
+    - thread_id: 会话ID（可选，不提供则创建新会话）
+    - use_llm_validate: 是否使用LLM验证规则分析结果（可选，默认False）
+    - sheet_name: 工作表名称（可选，默认第一个）
+    - auto_analysis: 是否自动分析（可选，默认True）
+    - analysis_prompt: 自定义分析提示词（可选）
+    - temperature: 生成温度（默认0.4）
+    - llm_api_key: LLM API密钥（可选）
+    - llm_base_url: LLM API地址（可选）
+    - llm_model: LLM模型名称（可选）
+    - analysis_api_key: 数据分析API密钥（可选）
+    
+    Yields:
+        str: 流式输出的字符串块
+    """
+    file_size = len(file_content)
+    
+    # === 静默处理：文件验证 ===
+    try:
+        validate_excel_file(filename, file_size)
+    except ValueError as e:
+        yield f"❌ 文件验证失败: {str(e)}\n"
+        return
+    
+    # === 静默处理：创建会话 ===
+    try:
+        current_thread_id, workspace_dir, is_new = get_or_create_thread(thread_id)
+        generated_dir = os.path.join(workspace_dir, "generated")
+        os.makedirs(generated_dir, exist_ok=True)
+    except Exception as e:
+        yield f"❌ 创建会话失败: {str(e)}\n"
+        return
+    
+    # === 静默处理：保存文件 ===
+    try:
+        excel_path = os.path.join(workspace_dir, filename)
+        with open(excel_path, "wb") as f:
+            f.write(file_content)
+    except Exception as e:
+        yield f"❌ 文件保存失败: {str(e)}\n"
+        return
+    
+    # === 静默处理：表头分析 ===
+    api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+    actual_use_llm_validate = use_llm_validate and bool(api_key)
+    
+    try:
+        process_result = process_excel_file(
+            filepath=excel_path,
+            output_dir=workspace_dir,
+            sheet_name=sheet_name,
+            use_llm_validate=actual_use_llm_validate,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model
+        )
+        
+        if not process_result.success:
+            yield f"❌ Excel处理失败: {process_result.error_message}\n"
+            return
+    except Exception as e:
+        yield f"❌ 表头分析失败: {str(e)}\n"
+        import traceback
+        yield f"{traceback.format_exc()}\n"
+        return
+    
+    # === 阶段1: 读取工作表信息 ===
+    yield "📋 **阶段1: 读取工作表信息**\n"
+    
+    available_sheets = get_sheet_names(excel_path)
+    if available_sheets:
+        yield f"   可用工作表: {', '.join(available_sheets)}\n"
+        if sheet_name:
+            yield f"   使用指定工作表: {sheet_name}\n"
+        else:
+            yield f"   使用默认工作表: {available_sheets[0]}\n"
+    yield "\n"
+    
+    # === 阶段2: AI数据分析 ===
+    if auto_analysis:
+        yield "🧠 **阶段2: AI数据分析**\n\n"
+        
+        prompt = analysis_prompt or DEFAULT_EXCEL_ANALYSIS_PROMPT
+        
+        # 调用流式数据分析
+        async for chunk in run_data_analysis_stream(
+            workspace_dir=workspace_dir,
+            thread_id=current_thread_id,
+            process_result=process_result,
+            analysis_prompt=prompt,
+            model=analysis_model,
+            temperature=temperature,
+            analysis_api_url=analysis_api_url,
+            analysis_api_key=analysis_api_key
+        ):
+            yield chunk
+    else:
+        yield "ℹ️ 已跳过自动分析（auto_analysis=False）\n"
+    
+    # 更新会话元数据（静默处理）
+    try:
+        if current_thread_id in storage.threads:
+            excel_files = storage.threads[current_thread_id].get("metadata", {}).get("excel_files", [])
+            excel_files.append({
+                "original_name": filename,
+                "processed_name": os.path.basename(process_result.processed_file_path) if process_result.processed_file_path else None,
+                "sheet_name": sheet_name,
+                "timestamp": int(time.time())
+            })
+            storage.threads[current_thread_id]["metadata"]["excel_files"] = excel_files
+    except Exception:
+        pass  # 忽略元数据更新错误
 

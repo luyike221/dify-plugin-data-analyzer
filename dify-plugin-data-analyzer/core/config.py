@@ -52,6 +52,11 @@ CLEANUP_INTERVAL_MINUTES = 30
 CODE_EXECUTION_TIMEOUT = 120
 MAX_NEW_TOKENS = 32768
 
+# Stream output configuration (流式输出配置)
+STREAM_BUFFER_SIZE = 0  # 缓冲区大小，0表示无限制
+STREAM_TIMEOUT_SECONDS = 60  # 流式输出超时时间（秒）
+STREAM_MAX_ANALYSIS_ROUNDS = 10  # 最大分析轮次，防止无限循环
+
 # File handling configuration
 FILE_STORAGE_DIR = os.path.join(WORKSPACE_BASE_DIR, "_files")
 VALID_FILE_PURPOSES = ["fine-tune", "answers", "file-extract", "assistants"]
@@ -82,7 +87,9 @@ DEFAULT_EXCEL_ANALYSIS_PROMPT = """请对上传的数据进行全面分析，包
 1. 数据概览：基本统计信息、数据类型分布
 2. 数据质量：缺失值、异常值检测
 3. 描述性统计：数值列的统计指标
-4. 数据可视化：生成关键指标的图表
-5. 洞察与建议：基于数据分析的发现和建议
+4. 洞察与建议：基于数据分析的发现和建议
 
-请生成一份完整的数据分析报告。"""
+请生成一份完整的数据分析报告。
+
+**重要：请使用中文进行所有分析、代码注释和报告撰写。**
+**禁止：请不要生成任何图表绘制代码（matplotlib、plotly、seaborn 等），专注于数据分析和统计计算。**"""

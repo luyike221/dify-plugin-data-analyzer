@@ -24,13 +24,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # 导入配置（避免循环导入，使用延迟导入）
-try:
-    from .config import EXCEL_LLM_API_KEY, EXCEL_LLM_BASE_URL, EXCEL_LLM_MODEL
-except ImportError:
-    # 如果无法导入，使用环境变量
-    EXCEL_LLM_API_KEY = os.environ.get("EXCEL_LLM_API_KEY", "")
-    EXCEL_LLM_BASE_URL = os.environ.get("EXCEL_LLM_BASE_URL", "https://api.openai.com/v1/chat/completions")
-    EXCEL_LLM_MODEL = os.environ.get("EXCEL_LLM_MODEL", "gpt-4o-mini")
+
+from .config import EXCEL_LLM_API_KEY, EXCEL_LLM_BASE_URL, EXCEL_LLM_MODEL
+
 
 
 @dataclass
@@ -631,6 +627,18 @@ def process_excel_file(
         csv_path = os.path.join(output_dir, f"{output_filename}.csv")
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
         
+        # 提取字段值样本（分组聚合后的常见值）
+        logger.info("📊 提取字段值样本...")
+        column_value_samples = extract_column_value_samples(df, max_samples_per_column=10)
+        
+        # 将值样本信息合并到列元数据中
+        for col_name, samples in column_value_samples.items():
+            if col_name in column_metadata:
+                column_metadata[col_name]["value_samples"] = samples
+            else:
+                # 如果列不在元数据中（理论上不应该发生），创建新的元数据项
+                column_metadata[col_name] = {"value_samples": samples}
+        
         # 保存元数据
         metadata = {
             "header_analysis": analysis.to_dict(),
@@ -642,6 +650,13 @@ def process_excel_file(
         metadata_path = os.path.join(output_dir, f"{output_filename}_metadata.json")
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
+        
+        # 打印处理后的JSON元数据
+        logger.info("=" * 80)
+        logger.info("📄 处理后的JSON元数据:")
+        logger.info("=" * 80)
+        logger.info(json.dumps(metadata, ensure_ascii=False, indent=2))
+        logger.info("=" * 80)
         
         return ExcelProcessResult(
             success=True,
@@ -680,6 +695,169 @@ def get_sheet_names(filepath: str) -> List[str]:
         return []
 
 
+def extract_column_value_samples(
+    df: pd.DataFrame,
+    max_samples_per_column: int = 10,
+    max_unique_ratio: float = 0.5
+) -> Dict[str, Dict[str, Any]]:
+    """
+    提取每个字段的常见值样本（通过分组聚合）
+    
+    参数:
+        df: 数据框
+        max_samples_per_column: 每个字段最多保留的样本数量
+        max_unique_ratio: 如果唯一值占比超过此比例，则只提供统计信息而不统计频率
+    
+    返回:
+        字典，key为列名，value为包含常见值和统计信息的字典
+    """
+    column_samples = {}
+    
+    for col_name in df.columns:
+        col_data = df[col_name]
+        
+        # 跳过完全为空的列
+        if col_data.isna().all():
+            continue
+        
+        # 计算非空值数量
+        non_null_count = col_data.notna().sum()
+        if non_null_count == 0:
+            continue
+        
+        # 计算唯一值数量
+        unique_count = col_data.nunique()
+        unique_ratio = unique_count / non_null_count if non_null_count > 0 else 1.0
+        
+        sample_info = {
+            "total_count": len(col_data),
+            "non_null_count": int(non_null_count),
+            "null_count": int(col_data.isna().sum()),
+            "unique_count": int(unique_count),
+            "data_type": str(col_data.dtype)
+        }
+        
+        # 判断是否为数值类型
+        is_numeric = pd.api.types.is_numeric_dtype(col_data)
+        
+        if is_numeric:
+            # 数值类型：提供统计信息和常见值（如果唯一值不太多）
+            sample_info["is_numeric"] = True
+            non_null_data = col_data.dropna()
+            if len(non_null_data) > 0:
+                sample_info["min"] = float(non_null_data.min())
+                sample_info["max"] = float(non_null_data.max())
+                sample_info["mean"] = float(non_null_data.mean())
+                sample_info["median"] = float(non_null_data.median())
+            else:
+                sample_info["min"] = None
+                sample_info["max"] = None
+                sample_info["mean"] = None
+                sample_info["median"] = None
+            
+            # 如果唯一值不太多，也统计频率
+            if unique_ratio <= max_unique_ratio and unique_count <= 100:
+                value_counts = col_data.value_counts().head(max_samples_per_column)
+                sample_info["top_values"] = [
+                    {"value": float(k) if pd.notna(k) else None, "count": int(v)}
+                    for k, v in value_counts.items()
+                ]
+            elif unique_count <= max_samples_per_column:
+                # 即使唯一值比例高，但如果总数不多，也展示所有值
+                value_counts = col_data.value_counts().head(max_samples_per_column)
+                sample_info["top_values"] = [
+                    {"value": float(k) if pd.notna(k) else None, "count": int(v)}
+                    for k, v in value_counts.items()
+                ]
+                sample_info["note"] = f"唯一值较多（{unique_count}个），展示所有值"
+        else:
+            # 非数值类型：统计频率
+            sample_info["is_numeric"] = False
+            
+            # 如果唯一值太多，只提供统计信息
+            if unique_ratio > max_unique_ratio:
+                sample_info["note"] = f"唯一值较多（{unique_count}个），仅展示部分常见值"
+                # 仍然展示前N个最常见的值
+                value_counts = col_data.value_counts().head(max_samples_per_column)
+                sample_info["top_values"] = [
+                    {"value": str(k) if pd.notna(k) else "空值", "count": int(v)}
+                    for k, v in value_counts.items()
+                ]
+            else:
+                # 唯一值不太多，统计所有值的频率
+                value_counts = col_data.value_counts().head(max_samples_per_column)
+                sample_info["top_values"] = [
+                    {"value": str(k) if pd.notna(k) else "空值", "count": int(v)}
+                    for k, v in value_counts.items()
+                ]
+        
+        column_samples[col_name] = sample_info
+    
+    return column_samples
+
+
+def _build_column_hierarchy_tree(column_metadata: Dict[str, Dict]) -> str:
+    """
+    构建列层级结构的树形展示
+    
+    参数:
+        column_metadata: 列元数据字典
+    
+    返回:
+        格式化的树形结构字符串
+    """
+    if not column_metadata:
+        return ""
+    
+    # 构建树形结构
+    tree = {}
+    
+    for col_name, meta in column_metadata.items():
+        # 获取所有层级
+        levels = []
+        level_keys = sorted([k for k in meta.keys() if k.startswith('level')], 
+                          key=lambda x: int(x.replace('level', '')))
+        for level_key in level_keys:
+            value = meta.get(level_key)
+            if value and str(value).strip():
+                levels.append(str(value).strip())
+        
+        # 如果没有层级信息，使用列名本身
+        if not levels:
+            levels = [col_name]
+        
+        # 构建树
+        current = tree
+        for i, level_value in enumerate(levels):
+            if level_value not in current:
+                current[level_value] = {}
+            current = current[level_value]
+    
+    # 递归生成树形字符串
+    def _format_tree(node: Dict, prefix: str = "", is_last: bool = True, depth: int = 0) -> List[str]:
+        lines = []
+        items = list(node.items())
+        
+        for idx, (key, children) in enumerate(items):
+            is_last_item = (idx == len(items) - 1)
+            current_prefix = "└─ " if is_last_item else "├─ "
+            
+            if children:
+                # 有子节点
+                lines.append(f"{prefix}{current_prefix}{key}")
+                next_prefix = prefix + ("   " if is_last_item else "│  ")
+                child_lines = _format_tree(children, next_prefix, is_last_item, depth + 1)
+                lines.extend(child_lines)
+            else:
+                # 叶子节点
+                lines.append(f"{prefix}{current_prefix}{key}")
+        
+        return lines
+    
+    tree_lines = _format_tree(tree)
+    return "\n".join(tree_lines)
+
+
 def generate_analysis_prompt(
     process_result: ExcelProcessResult,
     custom_prompt: str = None,
@@ -702,26 +880,55 @@ def generate_analysis_prompt(
     # 基础信息
     prompt_parts = []
     
+    # 添加语言要求（必须在最前面）
+    prompt_parts.append("**重要要求：请使用中文进行所有分析和回答，包括代码注释、分析报告等所有内容。**")
+    prompt_parts.append("")
+    prompt_parts.append("**禁止要求：请不要生成任何图表绘制代码，包括但不限于：**")
+    prompt_parts.append("- 不要使用 matplotlib、plotly、seaborn 等绘图库")
+    prompt_parts.append("- 不要使用 plt.figure()、plt.plot()、plt.savefig() 等绘图函数")
+    prompt_parts.append("- 不要使用 .plot()、.hist() 等 pandas 绘图方法")
+    prompt_parts.append("- 不要保存任何图片文件（.png、.jpg、.svg 等）")
+    prompt_parts.append("**请专注于数据分析和统计计算，不要生成可视化代码。**")
+    prompt_parts.append("")
+    
     if custom_prompt:
         prompt_parts.append(custom_prompt)
     else:
         prompt_parts.append("请对上传的数据进行全面分析，生成数据分析报告。")
     
+    # 添加数据文件信息（重要：告诉AI需要读取CSV文件）
+    if process_result.processed_file_path:
+        csv_filename = os.path.basename(process_result.processed_file_path)
+        prompt_parts.append(f"\n\n## 数据文件")
+        prompt_parts.append(f"**重要：工作空间中已准备好处理后的CSV数据文件，文件名为：`{csv_filename}`**")
+        prompt_parts.append(f"")
+        prompt_parts.append(f"**请务必使用以下代码读取数据文件进行分析：**")
+        prompt_parts.append(f"```python")
+        prompt_parts.append(f"import pandas as pd")
+        prompt_parts.append(f"")
+        prompt_parts.append(f"# 读取处理后的CSV文件")
+        prompt_parts.append(f"df = pd.read_csv('{csv_filename}')")
+        prompt_parts.append(f"print(f'数据形状: {{df.shape}}')")
+        prompt_parts.append(f"print(f'列名: {{list(df.columns)}}')")
+        prompt_parts.append(f"```")
+        prompt_parts.append(f"")
+        prompt_parts.append(f"**注意：**")
+        prompt_parts.append(f"- CSV文件已保存在当前工作空间目录中")
+        prompt_parts.append(f"- 请使用 `pd.read_csv('{csv_filename}')` 读取数据")
+        prompt_parts.append(f"- 不要仅根据元数据进行分析，必须读取实际数据文件进行计算")
+        prompt_parts.append(f"")
+    
     # 添加数据概况
-    prompt_parts.append(f"\n\n## 数据概况")
+    prompt_parts.append(f"\n## 数据概况")
     prompt_parts.append(f"- 数据行数: {process_result.row_count}")
     prompt_parts.append(f"- 列数: {len(process_result.column_names)}")
-    prompt_parts.append(f"- 列名: {', '.join(process_result.column_names[:20])}")
-    if len(process_result.column_names) > 20:
-        prompt_parts.append(f"  ... 等共 {len(process_result.column_names)} 列")
     
-    # 添加表头分析信息
+    # 添加表头类型信息（仅保留对分析有用的信息）
     if process_result.header_analysis:
         ha = process_result.header_analysis
-        prompt_parts.append(f"\n## 表头结构")
-        prompt_parts.append(f"- 表头类型: {ha.header_type}")
         if ha.header_type == 'multi':
-            prompt_parts.append(f"- 表头层级: {ha.header_rows}层")
+            prompt_parts.append(f"\n## 表头结构")
+            prompt_parts.append(f"- 表头类型: 多级表头（{ha.header_rows}层）")
     
     # 添加列结构元数据（帮助AI理解列之间的关系）
     if include_metadata and process_result.column_metadata:
@@ -732,16 +939,71 @@ def generate_analysis_prompt(
         )
         
         if has_multi_level:
-            prompt_parts.append(f"\n## 列层级结构（帮助理解列之间的分组关系）")
-            # 按level1分组展示
-            groups = defaultdict(list)
-            for col_name, meta in process_result.column_metadata.items():
-                level1 = meta.get('level1', col_name)
-                groups[level1].append(col_name)
-            
-            for group, cols in groups.items():
-                if len(cols) > 1:
-                    prompt_parts.append(f"- {group}: {', '.join(cols)}")
+            prompt_parts.append(f"\n## 列层级结构（多级表头语义关系）")
+            prompt_parts.append("以下树形结构展示了列之间的层级分组关系，有助于理解数据的业务含义：")
+            prompt_parts.append("")
+            hierarchy_tree = _build_column_hierarchy_tree(process_result.column_metadata)
+            if hierarchy_tree:
+                prompt_parts.append(hierarchy_tree)
+            else:
+                # 如果树形构建失败，使用分组展示
+                groups = defaultdict(list)
+                for col_name, meta in process_result.column_metadata.items():
+                    level1 = meta.get('level1', col_name)
+                    groups[level1].append(col_name)
+                
+                for group, cols in groups.items():
+                    if len(cols) > 1:
+                        prompt_parts.append(f"- {group}: {', '.join(cols)}")
     
-    return '\n'.join(prompt_parts)
+    # 添加完整的列名列表
+    prompt_parts.append(f"\n## 完整列名列表")
+    if len(process_result.column_names) <= 30:
+        # 如果列数不多，全部展示
+        for idx, col_name in enumerate(process_result.column_names, 1):
+            prompt_parts.append(f"{idx}. {col_name}")
+    else:
+        # 如果列数很多，展示前20个和后10个
+        for idx, col_name in enumerate(process_result.column_names[:20], 1):
+            prompt_parts.append(f"{idx}. {col_name}")
+        prompt_parts.append(f"... (省略中间 {len(process_result.column_names) - 30} 列) ...")
+        for idx, col_name in enumerate(process_result.column_names[-10:], len(process_result.column_names) - 9):
+            prompt_parts.append(f"{idx}. {col_name}")
+        prompt_parts.append(f"\n(共 {len(process_result.column_names)} 列)")
+    
+    # 添加字段值样本信息（以JSON格式提供，更结构化）
+    if include_metadata and process_result.column_metadata:
+        prompt_parts.append(f"\n## 字段值样本（常见值统计）")
+        prompt_parts.append("以下JSON格式展示了每个字段的常见值及其出现频率，有助于理解数据的实际内容：")
+        prompt_parts.append("")
+        
+        # 构建包含值样本的column_metadata JSON
+        column_metadata_with_samples = {}
+        for col_name in process_result.column_names:
+            if col_name in process_result.column_metadata:
+                column_metadata_with_samples[col_name] = process_result.column_metadata[col_name]
+        
+        # 将column_metadata转换为格式化的JSON字符串
+        prompt_parts.append("```json")
+        prompt_parts.append(json.dumps(column_metadata_with_samples, ensure_ascii=False, indent=2))
+        prompt_parts.append("```")
+        prompt_parts.append("")
+        prompt_parts.append("**说明：**")
+        prompt_parts.append("- 每个字段的元数据包含 `value_samples` 字段，其中包含该字段的统计信息和常见值")
+        prompt_parts.append("- `value_samples.top_values` 数组展示了出现频率最高的值及其出现次数")
+        prompt_parts.append("- 对于数值类型字段，还包含 `min`、`max`、`mean`、`median` 等统计信息")
+    
+    # 在末尾再次强调要求
+    prompt_parts.append("\n\n**再次提醒：请务必使用中文进行所有分析、代码注释和报告撰写，且不要生成任何图表绘制代码。**")
+    
+    full_prompt = '\n'.join(prompt_parts)
+    
+    # 打印生成的提示词
+    logger.info("=" * 80)
+    logger.info("📝 生成的AI分析提示词:")
+    logger.info("=" * 80)
+    logger.info(full_prompt)
+    logger.info("=" * 80)
+    
+    return full_prompt
 

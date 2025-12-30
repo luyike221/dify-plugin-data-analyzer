@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
 
-from .config import WORKSPACE_BASE_DIR
+from .config import WORKSPACE_BASE_DIR, EXCEL_VALID_EXTENSIONS
 
 
 def get_thread_workspace(thread_id: str) -> str:
@@ -61,13 +61,18 @@ def extract_text_from_content(content: List[Dict[str, Any]]) -> str:
 
 
 def collect_file_info(directory: str) -> str:
-    """Collect file information from directory"""
+    """Collect file information from directory, excluding original Excel files"""
     all_file_info_str = ""
     dir_path = Path(directory)
     if not dir_path.exists():
         return ""
 
-    files = sorted([f for f in dir_path.iterdir() if f.is_file()])
+    # 过滤掉原始 Excel 文件，只保留处理后的 CSV 和元数据 JSON 文件
+    files = sorted([
+        f for f in dir_path.iterdir() 
+        if f.is_file() and f.suffix.lower() not in EXCEL_VALID_EXTENSIONS
+    ])
+    
     for idx, file_path in enumerate(files, start=1):
         size_bytes = os.path.getsize(file_path)
         size_kb = size_bytes / 1024

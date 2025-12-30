@@ -12,8 +12,8 @@ description:
   ja_JP: Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution
   zh_Hans: Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution
   pt_BR: Intelligent Excel Analysis API - Automated multi-level header processing and AI-powered data analysis with code generation and execution
-icon: icon.svg
-icon_dark: icon-dark.svg
+icon: icon.jpg
+icon_dark: icon.jpg
 resource:
   memory: 268435456
   permission: {}
