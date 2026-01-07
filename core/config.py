@@ -74,8 +74,8 @@ SUPPORTED_TOOLS = ["code_interpreter"]
 # Excel processing configuration
 EXCEL_VALID_EXTENSIONS = ['.xlsx', '.xls', '.xlsm', '.xlsb']
 EXCEL_MAX_FILE_SIZE_MB = 100  # 最大文件大小（MB）
-EXCEL_MAX_ROWS_PREVIEW = 15   # 表头分析预览行数
-EXCEL_MAX_COLS_PREVIEW = 10   # 表头分析预览列数
+EXCEL_MAX_ROWS_PREVIEW = 10   # 表头分析预览行数（默认值，可通过provider配置覆盖）
+EXCEL_MAX_COLS_PREVIEW = 5    # 表头分析预览列数（默认值，可通过provider配置覆盖）
 
 # LLM for header analysis (可选，用于智能表头分析)
 EXCEL_LLM_API_KEY = os.environ.get("EXCEL_LLM_API_KEY", "")

@@ -127,6 +127,44 @@ credentials_schema:
       zh_Hans: "如果分析API需要认证，请输入API密钥。可选，某些API可能不需要。"
       pt_BR: "Chave de API para API de análise se autenticação for necessária. Opcional, algumas APIs podem não exigir."
       ja_JP: "分析APIで認証が必要な場合のAPIキー。オプション、一部のAPIでは不要な場合があります。"
+  - name: "preview_max_rows"
+    type: "text-input"
+    required: false
+    label:
+      en_US: "Preview Max Rows"
+      zh_Hans: "预览最大行数"
+      pt_BR: "Máximo de Linhas de Visualização"
+      ja_JP: "プレビュー最大行数"
+    placeholder:
+      en_US: "10"
+      zh_Hans: "10"
+      pt_BR: "10"
+      ja_JP: "10"
+    help:
+      en_US: "Maximum number of rows to preview for header analysis. Default: 10"
+      zh_Hans: "表头分析时预览的最大行数。默认：10"
+      pt_BR: "Número máximo de linhas para visualizar na análise de cabeçalho. Padrão: 10"
+      ja_JP: "ヘッダー分析時にプレビューする最大行数。デフォルト：10"
+    default: "10"
+  - name: "preview_max_cols"
+    type: "text-input"
+    required: false
+    label:
+      en_US: "Preview Max Columns"
+      zh_Hans: "预览最大列数"
+      pt_BR: "Máximo de Colunas de Visualização"
+      ja_JP: "プレビュー最大列数"
+    placeholder:
+      en_US: "5"
+      zh_Hans: "5"
+      pt_BR: "5"
+      ja_JP: "5"
+    help:
+      en_US: "Maximum number of columns to preview for header analysis. Default: 5"
+      zh_Hans: "表头分析时预览的最大列数。默认：5"
+      pt_BR: "Número máximo de colunas para visualizar na análise de cabeçalho. Padrão: 5"
+      ja_JP: "ヘッダー分析時にプレビューする最大列数。デフォルト：5"
+    default: "5"
 
 #########################################################################################
 # If you want to support OAuth, you can uncomment the following code.

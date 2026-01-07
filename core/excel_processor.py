@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 导入配置（避免循环导入，使用延迟导入）
 
-from .config import EXCEL_LLM_API_KEY, EXCEL_LLM_BASE_URL, EXCEL_LLM_MODEL
+from .config import EXCEL_LLM_API_KEY, EXCEL_LLM_BASE_URL, EXCEL_LLM_MODEL, EXCEL_MAX_ROWS_PREVIEW, EXCEL_MAX_COLS_PREVIEW
 
 
 
@@ -134,84 +134,115 @@ class SmartHeaderProcessor:
                 })
         return merged_info
     
-    def validate_with_llm(self, rule_analysis: HeaderAnalysis, 
+    def analyze_with_llm(self, 
                          llm_api_key: Optional[str] = None,
                          llm_base_url: Optional[str] = None,
-                         llm_model: Optional[str] = None) -> HeaderAnalysis:
+                         llm_model: Optional[str] = None,
+                         preview_max_rows: Optional[int] = None,
+                         preview_max_cols: Optional[int] = None) -> HeaderAnalysis:
         """
-        使用LLM验证规则分析的结果
+        使用LLM直接分析Excel表头结构（包含行检测和列检测）
         
         参数:
-            rule_analysis: 规则分析的结果
-            llm_api_key: LLM API密钥（可选）
+            llm_api_key: LLM API密钥（必填）
             llm_base_url: LLM API地址（可选）
             llm_model: LLM模型名称（可选）
+            preview_max_rows: 预览最大行数（可选，默认从配置读取）
+            preview_max_cols: 预览最大列数（可选，默认从配置读取）
         
         返回:
-            验证后的分析结果（如果LLM验证失败，返回原规则分析结果）
+            HeaderAnalysis 分析结果
+        
+        异常:
+            如果LLM API Key未配置，抛出ValueError
         """
-        preview_data = self.get_preview_data()
+        # 检查API Key
+        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+        if not api_key:
+            raise ValueError("LLM API Key 未配置，LLM分析是必需的")
+        
+        # 使用传入的参数或从配置读取默认值
+        max_rows = preview_max_rows if preview_max_rows is not None else EXCEL_MAX_ROWS_PREVIEW
+        max_cols = preview_max_cols if preview_max_cols is not None else EXCEL_MAX_COLS_PREVIEW
+        
+        preview_data = self.get_preview_data(max_rows=max_rows, max_cols=max_cols)
         merged_info = self.get_merged_info()
         
-        # 构建验证提示词
-        prompt = self._build_validation_prompt(preview_data, merged_info, rule_analysis)
+        # 获取列数信息
+        max_col = self.ws.max_column
+        
+        # 构建分析提示词（包含行和列检测）
+        prompt = self._build_analysis_prompt(preview_data, merged_info, max_col)
         
         # 调用LLM（使用传入的配置或从全局配置读取）
         result = self._call_llm(prompt, llm_api_key, llm_base_url, llm_model)
         
-        # 解析LLM验证结果
-        validated = self._parse_validation_response(result, rule_analysis)
+        if not result:
+            raise ValueError("LLM调用失败，无法进行分析")
         
-        return validated
+        # 解析LLM分析结果（包含行和列检测）
+        analysis = self._parse_analysis_response(result)
+        
+        return analysis
     
-    def _build_validation_prompt(self, preview_data: List[List], merged_info: List[Dict], 
-                                rule_analysis: HeaderAnalysis) -> str:
-        """构建LLM验证提示词"""
+    def _build_analysis_prompt(self, preview_data: List[List], merged_info: List[Dict], max_col: int) -> str:
+        """构建LLM分析提示词（包含行检测和列检测）"""
         # 格式化预览数据为表格形式
-        table_str = "行号 | 内容\n" + "-" * 50 + "\n"
+        table_str = "行号 | 列1 | 列2 | 列3 | 列4 | 列5 | 列6 | 列7 | 列8 | ...\n" + "-" * 80 + "\n"
         for i, row in enumerate(preview_data, 1):
-            row_str = " | ".join(str(cell)[:20] for cell in row[:8])
-            table_str += f"  {i}  | {row_str}\n"
+            row_str = " | ".join(str(cell)[:15] for cell in row[:8])
+            table_str += f"  {i:2d}  | {row_str}\n"
         
         # 格式化合并单元格信息
         merged_str = "无" if not merged_info else "\n".join(
-            f"  - {m['range']}: '{m['value']}'" for m in merged_info[:5]
+            f"  - {m['range']}: '{m['value']}'" for m in merged_info[:10]
         )
         
-        prompt = f"""请验证以下Excel表格的规则分析结果是否正确。
+        prompt = f"""请分析以下Excel表格的结构，识别表头行、数据起始行和有效列。
 
-【表格预览】（前15行，[数值:xxx]表示数值类型）
+【表格预览】（前{len(preview_data)}行，[数值:xxx]表示数值类型，空单元格显示为空）
 {table_str}
 
-【合并单元格】
+【合并单元格信息】
 {merged_str}
 
-【规则分析结果】
-- 跳过行数: {rule_analysis.skip_rows}
-- 表头行数: {rule_analysis.header_rows}
-- 表头类型: {rule_analysis.header_type}
-- 数据起始行: {rule_analysis.data_start_row}
-- 分析原因: {rule_analysis.reason}
+【表格信息】
+- 总列数: {max_col}
+- 总行数: {len(preview_data)}（预览）
 
-请验证这个结果是否合理，并以JSON格式返回：
+请仔细分析表格结构，并以JSON格式返回分析结果：
 {{
-    "is_valid": <true或false，表示结果是否合理>,
+    "skip_rows": <需要跳过的无效行数（标题、注释等），从第1行开始计数>,
+    "header_rows": <表头占用的行数>,
+    "header_type": "<single或multi>",
+    "data_start_row": <数据开始行（1-indexed）>,
+    "valid_cols": [<有效列的索引列表，1-indexed，例如[1,2,3,5,7]表示第1,2,3,5,7列是有效的>],
     "confidence": "<high/medium/low>",
-    "suggestions": {{
-        "skip_rows": <建议的跳过行数，如果合理则与规则分析相同>,
-        "header_rows": <建议的表头行数，如果合理则与规则分析相同>,
-        "header_type": "<single或multi>",
-        "data_start_row": <建议的数据起始行，如果合理则与规则分析相同>
-    }},
-    "reason": "<验证说明：如果合理，说明为什么；如果不合理，指出问题并给出建议>"
+    "reason": "<分析说明：说明如何识别表头、数据起始行和有效列>"
 }}
 
-验证要点：
-- 检查跳过的行是否真的是无效行（标题、注释等）
-- 检查表头行数是否正确（是否遗漏了多级表头）
-- 检查数据起始行是否准确（是否把表头行误判为数据行）
-- 如果规则分析结果合理，保持原结果；如果不合理，给出修正建议
-- 只返回JSON，不要其他内容"""
+分析要点：
+1. **行检测**：
+   - 识别需要跳过的无效行（通常是标题、说明等，非空单元格很少的行）
+   - 识别表头行（通常包含列名，可能是单行或多行）
+   - 识别数据起始行（第一行包含实际数据的行，通常包含数值）
+
+2. **列检测**：
+   - 识别有效列：表头区域有内容或数据区域有数值数据的列
+   - 过滤无效列：表头区域完全为空且数据区域完全为空或没有数值数据的列
+   - valid_cols 应该是1-indexed的列索引列表，例如 [1,2,3,5,7] 表示第1,2,3,5,7列是有效的
+   - 如果所有列都有效，valid_cols 可以为 null 或包含所有列索引
+
+3. **表头类型**：
+   - single: 单行表头
+   - multi: 多行表头（合并单元格或分层结构）
+
+4. **注意事项**：
+   - skip_rows 是从第1行开始需要跳过的行数（例如skip_rows=2表示跳过第1-2行）
+   - data_start_row 是数据开始的行号（1-indexed）
+   - header_rows 是表头占用的行数
+   - 确保 data_start_row = skip_rows + header_rows + 1
+   - 只返回JSON，不要其他内容"""
         
         return prompt
     
@@ -231,14 +262,13 @@ class SmartHeaderProcessor:
         model = llm_model if llm_model is not None else EXCEL_LLM_MODEL
         
         logger.info("=" * 60)
-        logger.info("🤖 调用 LLM API 进行表头验证")
+        logger.info("🤖 调用 LLM API 进行表头分析（包含行检测和列检测）")
         logger.info(f"🔗 EXCEL_LLM_BASE_URL: {base_url}")
         logger.info(f"📌 模型: {model}")
         logger.info(f"🔑 API Key: {'已配置' if api_key else '未配置'}")
         
         if not api_key:
-            logger.warning("⚠️ 未配置 LLM API Key，跳过 LLM 验证")
-            return None
+            raise ValueError("LLM API Key 未配置，LLM分析是必需的")
             
         url = base_url
         
@@ -249,7 +279,7 @@ class SmartHeaderProcessor:
         
         payload = {
             "model": model,
-            "max_tokens": 500,
+            "max_tokens": 1000,  # 增加token数量以支持列检测结果
             "messages": [{"role": "user", "content": prompt}]
         }
         
@@ -275,11 +305,10 @@ class SmartHeaderProcessor:
             logger.debug("异常详情:", exc_info=True)
             return None
     
-    def _parse_validation_response(self, response: str, rule_analysis: HeaderAnalysis) -> HeaderAnalysis:
-        """解析LLM验证结果"""
+    def _parse_analysis_response(self, response: str) -> HeaderAnalysis:
+        """解析LLM分析结果（包含行检测和列检测）"""
         if not response:
-            # LLM调用失败，返回原规则分析结果
-            return rule_analysis
+            raise ValueError("LLM响应为空")
         
         try:
             # 提取JSON部分（支持嵌套JSON）
@@ -296,145 +325,47 @@ class SmartHeaderProcessor:
                     raise ValueError("未找到JSON格式的响应")
                 data = json.loads(json_match.group())
             
-            is_valid = data.get('is_valid', True)
-            suggestions = data.get('suggestions', {})
+            # 解析行检测结果
+            skip_rows = data.get('skip_rows', 0)
+            header_rows = data.get('header_rows', 1)
+            header_type = data.get('header_type', 'single')
+            data_start_row = data.get('data_start_row', skip_rows + header_rows + 1)
+            confidence = data.get('confidence', 'medium')
+            reason = data.get('reason', 'LLM分析结果')
             
-            if is_valid:
-                # LLM认为规则分析结果合理，保持原结果但更新置信度和原因
-                return HeaderAnalysis(
-                    skip_rows=rule_analysis.skip_rows,
-                    header_rows=rule_analysis.header_rows,
-                    header_type=rule_analysis.header_type,
-                    data_start_row=rule_analysis.data_start_row,
-                    confidence=data.get('confidence', 'high'),  # LLM验证通过，置信度提升
-                    reason=f"规则分析+LLM验证: {data.get('reason', '验证通过')}",
-                    valid_cols=rule_analysis.valid_cols  # 保持原有的列过滤结果
-                )
+            # 解析列检测结果
+            valid_cols = data.get('valid_cols', None)
+            if valid_cols is None:
+                # 如果为null，表示所有列都有效
+                valid_cols = None
+            elif isinstance(valid_cols, list):
+                # 确保是整数列表
+                valid_cols = [int(col) for col in valid_cols if isinstance(col, (int, str))]
+                # 如果包含所有列，设为None
+                max_col = self.ws.max_column
+                if len(valid_cols) == max_col and set(valid_cols) == set(range(1, max_col + 1)):
+                    valid_cols = None
             else:
-                # LLM认为不合理，使用LLM的建议
-                # 注意：LLM可能建议修改表头行数，但列过滤结果仍然保留
-                return HeaderAnalysis(
-                    skip_rows=suggestions.get('skip_rows', rule_analysis.skip_rows),
-                    header_rows=suggestions.get('header_rows', rule_analysis.header_rows),
-                    header_type=suggestions.get('header_type', rule_analysis.header_type),
-                    data_start_row=suggestions.get('data_start_row', rule_analysis.data_start_row),
-                    confidence=data.get('confidence', 'medium'),
-                    reason=f"规则分析+LLM修正: {data.get('reason', 'LLM建议修正')}",
-                    valid_cols=rule_analysis.valid_cols  # 保持原有的列过滤结果
-                )
+                valid_cols = None
+            
+            # 验证数据起始行的一致性
+            if data_start_row != skip_rows + header_rows + 1:
+                logger.warning(f"⚠️ 数据起始行不一致，LLM返回: {data_start_row}，计算值: {skip_rows + header_rows + 1}，使用LLM返回的值")
+            
+            return HeaderAnalysis(
+                skip_rows=skip_rows,
+                header_rows=max(1, header_rows),
+                header_type=header_type,
+                data_start_row=data_start_row,
+                confidence=confidence,
+                reason=f"LLM分析: {reason}",
+                valid_cols=valid_cols
+            )
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"解析LLM验证响应失败: {e}，使用原规则分析结果")
-        
-        # 解析失败，返回原规则分析结果
-        return rule_analysis
+            logger.error(f"解析LLM分析响应失败: {e}")
+            logger.error(f"响应内容: {response[:500]}")
+            raise ValueError(f"解析LLM响应失败: {e}")
     
-    def analyze_with_rules(self) -> HeaderAnalysis:
-        """基于规则的分析（作为LLM的降级方案）"""
-        max_col = self.ws.max_column
-        skip_rows = 0
-        header_rows = 1
-        
-        # 检测需要跳过的行
-        for row in range(1, min(6, self.ws.max_row + 1)):
-            row_values = [self.get_cell_value(row, col) for col in range(1, max_col + 1)]
-            non_empty = sum(1 for v in row_values if v is not None)
-            
-            # 如果只有很少的非空单元格，可能是标题行
-            if non_empty <= 2 and non_empty < max_col * 0.3:
-                skip_rows = row
-            else:
-                break
-        
-        # 检测表头行数
-        header_start = skip_rows + 1
-        
-        # 检查合并单元格
-        max_merged_row = 0
-        for merged_range in self.ws.merged_cells.ranges:
-            if merged_range.min_row > skip_rows:
-                if merged_range.max_row > max_merged_row:
-                    max_merged_row = merged_range.max_row
-        
-        if max_merged_row > header_start:
-            header_rows = max_merged_row - skip_rows
-        
-        # 检测数据行开始位置
-        data_start = skip_rows + header_rows + 1
-        for row in range(header_start, min(skip_rows + 10, self.ws.max_row + 1)):
-            row_values = [self.get_cell_value(row, col) for col in range(1, max_col + 1)]
-            non_empty = sum(1 for v in row_values if v is not None)
-            numeric = sum(1 for v in row_values if isinstance(v, (int, float)) and not isinstance(v, bool))
-            
-            if non_empty > 0 and numeric / max(non_empty, 1) > 0.4:
-                data_start = row
-                header_rows = row - skip_rows - 1
-                break
-        
-        header_type = 'multi' if header_rows > 1 else 'single'
-        
-        # 注意：列检测在LLM验证完成后进行，这里不进行列检测
-        return HeaderAnalysis(
-            skip_rows=skip_rows,
-            header_rows=max(1, header_rows),
-            header_type=header_type,
-            data_start_row=data_start,
-            confidence='medium',
-            reason='基于规则分析',
-            valid_cols=None  # 列检测在LLM验证完成后进行
-        )
-    
-    def _detect_valid_columns(self, skip_rows: int, header_rows: int, data_start_row: int) -> List[int]:
-        """
-        检测有效列（过滤无效列）
-        
-        无效列的判断标准：
-        1. 表头区域完全为空
-        2. 数据区域完全为空或没有数值数据
-        
-        返回: 有效列的索引列表（1-indexed）
-        """
-        max_col = self.ws.max_column
-        header_start = skip_rows + 1
-        header_end = skip_rows + header_rows
-        valid_cols = []
-        
-        logger.info("🔍 开始检测无效列...")
-        
-        for col in range(1, max_col + 1):
-            # 检查表头区域是否有内容
-            has_header = False
-            for row in range(header_start, header_end + 1):
-                value = self.get_cell_value(row, col)
-                if value is not None and str(value).strip():
-                    has_header = True
-                    break
-            
-            # 检查数据区域是否有数值数据
-            has_data = False
-            numeric_count = 0
-            total_count = 0
-            for row in range(data_start_row, min(data_start_row + 10, self.ws.max_row + 1)):
-                value = self.ws.cell(row, col).value
-                if value is not None:
-                    total_count += 1
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        numeric_count += 1
-                        has_data = True
-            
-            # 如果表头有内容或数据区域有数值，则认为是有效列
-            if has_header or has_data:
-                valid_cols.append(col)
-                logger.debug(f"✅ 列 {col}: 有效 (表头: {has_header}, 数据: {has_data}, 数值: {numeric_count}/{total_count})")
-            else:
-                logger.info(f"❌ 列 {col}: 无效 (表头为空且数据为空)")
-        
-        logger.info(f"📊 列过滤结果: 总列数 {max_col}, 有效列数 {len(valid_cols)}, 无效列数 {max_col - len(valid_cols)}")
-        
-        # 如果所有列都有效，返回None（表示不需要过滤）
-        if len(valid_cols) == max_col:
-            return None
-        
-        return valid_cols
     
     def extract_headers(self, analysis: HeaderAnalysis) -> Tuple[List[str], Dict[str, Dict]]:
         """
@@ -511,44 +442,37 @@ class SmartHeaderProcessor:
             counts[name] += 1
         return result
     
-    def to_dataframe(self, analysis: HeaderAnalysis = None, use_llm_validate: bool = False,
+    def to_dataframe(self, analysis: HeaderAnalysis = None,
                     llm_api_key: Optional[str] = None,
                     llm_base_url: Optional[str] = None,
-                    llm_model: Optional[str] = None) -> Tuple[pd.DataFrame, HeaderAnalysis, Dict[str, Dict]]:
+                    llm_model: Optional[str] = None,
+                    preview_max_rows: Optional[int] = None,
+                    preview_max_cols: Optional[int] = None) -> Tuple[pd.DataFrame, HeaderAnalysis, Dict[str, Dict]]:
         """
         转换为DataFrame
         
         参数:
-            analysis: 预先的分析结果，如果为None则自动分析
-            use_llm_validate: 是否使用LLM验证规则分析结果
-            llm_api_key: LLM API密钥（可选）
+            analysis: 预先的分析结果，如果为None则使用LLM自动分析（必选）
+            llm_api_key: LLM API密钥（必填，如果analysis为None）
             llm_base_url: LLM API地址（可选）
             llm_model: LLM模型名称（可选）
+            preview_max_rows: 预览最大行数（可选，默认从配置读取）
+            preview_max_cols: 预览最大列数（可选，默认从配置读取）
         
         返回:
             (DataFrame, 分析结果, 列结构元数据)
         """
         if analysis is None:
-            # 先进行规则分析（只做行检测，不做列检测）
-            analysis = self.analyze_with_rules()
-            
-            # 如果启用LLM验证，用LLM验证规则分析结果
-            # 优先使用传入的配置，否则使用全局配置
-            api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
-            if use_llm_validate and api_key:
-                analysis = self.validate_with_llm(analysis, llm_api_key, llm_base_url, llm_model)
-        
-        # LLM验证完成后，进行列检测（使用最终的表头行数和数据起始行）
-        if analysis.valid_cols is None:
-            logger.info("🔍 LLM验证完成，开始进行列检测...")
-            valid_cols = self._detect_valid_columns(
-                analysis.skip_rows, 
-                analysis.header_rows, 
-                analysis.data_start_row
+            # 使用LLM进行分析（包含行检测和列检测）
+            logger.info("🤖 使用LLM进行表头分析（包含行检测和列检测）...")
+            analysis = self.analyze_with_llm(
+                llm_api_key, 
+                llm_base_url, 
+                llm_model,
+                preview_max_rows=preview_max_rows,
+                preview_max_cols=preview_max_cols
             )
-            # 更新分析结果，添加列检测结果
-            analysis.valid_cols = valid_cols
-            logger.info("✅ 列检测完成")
+            logger.info("✅ LLM分析完成")
         
         headers, column_metadata = self.extract_headers(analysis)
         
@@ -582,11 +506,12 @@ def process_excel_file(
     filepath: str,
     output_dir: str,
     sheet_name: str = None,
-    use_llm_validate: bool = False,
     output_filename: str = None,
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
-    llm_model: Optional[str] = None
+    llm_model: Optional[str] = None,
+    preview_max_rows: Optional[int] = None,
+    preview_max_cols: Optional[int] = None
 ) -> ExcelProcessResult:
     """
     处理Excel文件的主函数
@@ -595,11 +520,12 @@ def process_excel_file(
         filepath: Excel文件路径
         output_dir: 输出目录
         sheet_name: 工作表名称
-        use_llm_validate: 是否使用LLM验证规则分析结果
         output_filename: 输出文件名（不含扩展名）
-        llm_api_key: LLM API密钥（可选）
+        llm_api_key: LLM API密钥（必填）
         llm_base_url: LLM API地址（可选）
         llm_model: LLM模型名称（可选）
+        preview_max_rows: 预览最大行数（可选，默认从配置读取）
+        preview_max_cols: 预览最大列数（可选，默认从配置读取）
     
     返回:
         ExcelProcessResult
@@ -608,13 +534,14 @@ def process_excel_file(
         # 确保输出目录存在
         os.makedirs(output_dir, exist_ok=True)
         
-        # 处理Excel
+        # 处理Excel（使用LLM进行分析，包含行检测和列检测）
         processor = SmartHeaderProcessor(filepath, sheet_name)
         df, analysis, column_metadata = processor.to_dataframe(
-            use_llm_validate=use_llm_validate,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
-            llm_model=llm_model
+            llm_model=llm_model,
+            preview_max_rows=preview_max_rows,
+            preview_max_cols=preview_max_cols
         )
         processor.close()
         

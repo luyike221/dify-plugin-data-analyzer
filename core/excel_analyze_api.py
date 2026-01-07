@@ -387,7 +387,6 @@ async def analyze_excel(
     analysis_api_url: str,
     analysis_model: str,
     thread_id: Optional[str] = None,
-    use_llm_validate: bool = False,
     sheet_name: Optional[str] = None,
     auto_analysis: bool = True,
     analysis_prompt: Optional[str] = None,
@@ -396,24 +395,23 @@ async def analyze_excel(
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     llm_model: Optional[str] = None,
-    analysis_api_key: Optional[str] = None
+    analysis_api_key: Optional[str] = None,
+    preview_max_rows: Optional[int] = None,
+    preview_max_cols: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Excel智能分析函数
     
     功能：
-    1. 处理Excel文件
-    2. 使用规则分析处理多级表头（默认）
-    3. 可选使用LLM验证规则分析结果
-    4. 可选自动数据分析
-    5. 支持会话复用
+    1. 处理Excel文件（使用LLM分析表头结构，包含行检测和列检测）
+    2. 可选自动数据分析
+    3. 支持会话复用
     
     参数：
     - file_content: Excel文件内容（bytes）
     - filename: 文件名
     - thread_id: 会话ID（可选，不提供则创建新会话）
-    - use_llm_validate: 是否使用LLM验证规则分析结果（可选，默认False）
-    - llm_api_key: LLM API密钥（可选）
+    - llm_api_key: LLM API密钥（必填，用于表头分析）
     - llm_base_url: LLM API地址（可选）
     - llm_model: LLM模型名称（可选）
     - sheet_name: 工作表名称（可选，默认第一个）
@@ -433,6 +431,15 @@ async def analyze_excel(
     # 验证文件
     validate_excel_file(filename, file_size)
     
+    # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
+    api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+    if not api_key:
+        return {
+            "thread_id": thread_id or "",
+            "status": "error",
+            "error_message": "LLM API Key 未配置，LLM分析是必需的。请提供 llm_api_key 参数或设置 EXCEL_LLM_API_KEY 环境变量。"
+        }
+    
     # 获取或创建会话
     current_thread_id, workspace_dir, is_new = get_or_create_thread(thread_id)
     generated_dir = os.path.join(workspace_dir, "generated")
@@ -447,20 +454,16 @@ async def analyze_excel(
         # 获取可用工作表
         available_sheets = get_sheet_names(excel_path)
         
-        # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
-        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
-        if use_llm_validate and not api_key:
-            use_llm_validate = False  # 没有API key则不进行LLM验证
-        
-        # 处理Excel文件（先规则分析，再用LLM验证）
+        # 处理Excel文件（使用LLM进行分析，包含行检测和列检测）
         process_result = process_excel_file(
             filepath=excel_path,
             output_dir=workspace_dir,
             sheet_name=sheet_name,
-            use_llm_validate=use_llm_validate,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
-            llm_model=llm_model
+            llm_model=llm_model,
+            preview_max_rows=preview_max_rows,
+            preview_max_cols=preview_max_cols
         )
         
         if not process_result.success:
@@ -596,22 +599,32 @@ async def process_excel_only(
     file_content: bytes,
     filename: str,
     thread_id: Optional[str] = None,
-    use_llm_validate: bool = False,
     sheet_name: Optional[str] = None,
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
-    llm_model: Optional[str] = None
+    llm_model: Optional[str] = None,
+    preview_max_rows: Optional[int] = None,
+    preview_max_cols: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     仅处理Excel文件（不进行数据分析）
     
     用于只需要处理表头、转换格式的场景
-    默认使用规则分析，可选使用LLM验证结果（LLM配置从.env读取）
+    使用LLM分析表头结构（包含行检测和列检测）
     """
     file_size = len(file_content)
     
     # 验证文件
     validate_excel_file(filename, file_size)
+    
+    # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
+    api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+    if not api_key:
+        return {
+            "thread_id": thread_id or "",
+            "status": "error",
+            "error_message": "LLM API Key 未配置，LLM分析是必需的。请提供 llm_api_key 参数或设置 EXCEL_LLM_API_KEY 环境变量。"
+        }
     
     # 获取或创建会话
     current_thread_id, workspace_dir, is_new = get_or_create_thread(thread_id)
@@ -625,20 +638,16 @@ async def process_excel_only(
         # 获取可用工作表
         available_sheets = get_sheet_names(excel_path)
         
-        # 检查LLM配置（优先使用传入的配置，否则使用环境变量）
-        api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
-        if use_llm_validate and not api_key:
-            use_llm_validate = False
-        
-        # 处理Excel文件（先规则分析，再用LLM验证）
+        # 处理Excel文件（使用LLM进行分析，包含行检测和列检测）
         process_result = process_excel_file(
             filepath=excel_path,
             output_dir=workspace_dir,
             sheet_name=sheet_name,
-            use_llm_validate=use_llm_validate,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
-            llm_model=llm_model
+            llm_model=llm_model,
+            preview_max_rows=preview_max_rows,
+            preview_max_cols=preview_max_cols
         )
         
         if not process_result.success:
@@ -1018,7 +1027,6 @@ def analyze_excel_stream(
     analysis_api_url: str,
     analysis_model: str,
     thread_id: Optional[str] = None,
-    use_llm_validate: bool = False,
     sheet_name: Optional[str] = None,
     auto_analysis: bool = True,
     analysis_prompt: Optional[str] = None,
@@ -1026,7 +1034,9 @@ def analyze_excel_stream(
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     llm_model: Optional[str] = None,
-    analysis_api_key: Optional[str] = None
+    analysis_api_key: Optional[str] = None,
+    preview_max_rows: Optional[int] = None,
+    preview_max_cols: Optional[int] = None
 ) -> Generator[str, None, None]:
     """
     Excel智能分析函数 - 流式版本
@@ -1039,12 +1049,11 @@ def analyze_excel_stream(
     - analysis_api_url: 数据分析API地址（必填）
     - analysis_model: 数据分析模型名称（必填）
     - thread_id: 会话ID（可选，不提供则创建新会话）
-    - use_llm_validate: 是否使用LLM验证规则分析结果（可选，默认False）
     - sheet_name: 工作表名称（可选，默认第一个）
     - auto_analysis: 是否自动分析（可选，默认True）
     - analysis_prompt: 自定义分析提示词（可选）
     - temperature: 生成温度（默认0.4）
-    - llm_api_key: LLM API密钥（可选）
+    - llm_api_key: LLM API密钥（必填，用于表头分析）
     - llm_base_url: LLM API地址（可选）
     - llm_model: LLM模型名称（可选）
     - analysis_api_key: 数据分析API密钥（可选）
@@ -1059,6 +1068,12 @@ def analyze_excel_stream(
         validate_excel_file(filename, file_size)
     except ValueError as e:
         yield f"❌ 文件验证失败: {str(e)}\n"
+        return
+    
+    # === 检查LLM配置 ===
+    api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
+    if not api_key:
+        yield f"❌ LLM API Key 未配置，LLM分析是必需的。请提供 llm_api_key 参数或设置 EXCEL_LLM_API_KEY 环境变量。\n"
         return
     
     # === 静默处理：创建会话 ===
@@ -1079,19 +1094,17 @@ def analyze_excel_stream(
         yield f"❌ 文件保存失败: {str(e)}\n"
         return
     
-    # === 静默处理：表头分析 ===
-    api_key = llm_api_key if llm_api_key is not None else EXCEL_LLM_API_KEY
-    actual_use_llm_validate = use_llm_validate and bool(api_key)
-    
+    # === 静默处理：表头分析（使用LLM，包含行检测和列检测） ===
     try:
         process_result = process_excel_file(
             filepath=excel_path,
             output_dir=workspace_dir,
             sheet_name=sheet_name,
-            use_llm_validate=actual_use_llm_validate,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
-            llm_model=llm_model
+            llm_model=llm_model,
+            preview_max_rows=preview_max_rows,
+            preview_max_cols=preview_max_cols
         )
         
         if not process_result.success:

@@ -247,12 +247,10 @@ class DifyPluginDataAnalyzerTool(Tool):
         参数:
         - input_file: Excel文件（必填）
         - query: 可选的分析查询语句或提示词
-        - use_llm_header_validation: 是否使用LLM验证表头（默认true）
         - thread_id: 可选的会话ID，用于复用已有会话
         """
         input_file = tool_parameters.get("input_file")
         query = tool_parameters.get("query", "")
-        use_llm_header_validation = tool_parameters.get("use_llm_header_validation", True)
         thread_id = tool_parameters.get("thread_id")  # 从工具参数获取会话ID（由Dify生成并传入）
         
         # 从 provider credentials 获取配置
@@ -285,6 +283,17 @@ class DifyPluginDataAnalyzerTool(Tool):
             analysis_api_url = credentials.get("analysis_api_url") or os.environ.get("ANALYSIS_API_URL")
             analysis_model = credentials.get("analysis_model") or os.environ.get("ANALYSIS_MODEL")
             analysis_api_key = credentials.get("analysis_api_key") or os.environ.get("ANALYSIS_API_KEY")
+            # 读取预览配置（支持字符串转整数）
+            preview_max_rows_str = credentials.get("preview_max_rows") or os.environ.get("PREVIEW_MAX_ROWS", "10")
+            preview_max_cols_str = credentials.get("preview_max_cols") or os.environ.get("PREVIEW_MAX_COLS", "5")
+            try:
+                preview_max_rows = int(preview_max_rows_str) if preview_max_rows_str else None
+            except (ValueError, TypeError):
+                preview_max_rows = None
+            try:
+                preview_max_cols = int(preview_max_cols_str) if preview_max_cols_str else None
+            except (ValueError, TypeError):
+                preview_max_cols = None
         else:
             llm_api_key = os.environ.get("EXCEL_LLM_API_KEY")
             llm_base_url = os.environ.get("EXCEL_LLM_BASE_URL", "https://api.openai.com/v1/chat/completions")
@@ -292,6 +301,17 @@ class DifyPluginDataAnalyzerTool(Tool):
             analysis_api_url = os.environ.get("ANALYSIS_API_URL")
             analysis_model = os.environ.get("ANALYSIS_MODEL")
             analysis_api_key = os.environ.get("ANALYSIS_API_KEY")
+            # 读取预览配置（支持字符串转整数）
+            preview_max_rows_str = os.environ.get("PREVIEW_MAX_ROWS", "10")
+            preview_max_cols_str = os.environ.get("PREVIEW_MAX_COLS", "5")
+            try:
+                preview_max_rows = int(preview_max_rows_str) if preview_max_rows_str else None
+            except (ValueError, TypeError):
+                preview_max_rows = None
+            try:
+                preview_max_cols = int(preview_max_cols_str) if preview_max_cols_str else None
+            except (ValueError, TypeError):
+                preview_max_cols = None
         
         # 验证必选配置
         if not analysis_api_url:
@@ -310,7 +330,14 @@ class DifyPluginDataAnalyzerTool(Tool):
             yield self.create_stream_variable_message('stream_output', error_msg)
             return
         
-        use_llm_validate = use_llm_header_validation and bool(llm_api_key)
+        # 验证LLM配置（LLM分析现在是必选的）
+        if not llm_api_key:
+            error_msg = (
+                "❌ **错误: 缺少必选配置 'llm_api_key'**\n\n"
+                "LLM分析是必需的，请在 Dify 插件管理中配置 LLM API Key。"
+            )
+            yield self.create_stream_variable_message('stream_output', error_msg)
+            return
         
         if not input_file:
             yield self.create_stream_variable_message('stream_output', "❌ 错误: 缺少文件参数，请上传Excel文件\n")
@@ -424,7 +451,6 @@ class DifyPluginDataAnalyzerTool(Tool):
                 analysis_api_url=analysis_api_url,
                 analysis_model=analysis_model,
                 thread_id=thread_id,  # 传递会话ID（来自Dify的conversation_id或插件内部创建）
-                use_llm_validate=use_llm_validate,
                 sheet_name=None,
                 auto_analysis=True,
                 analysis_prompt=analysis_prompt,
@@ -432,7 +458,9 @@ class DifyPluginDataAnalyzerTool(Tool):
                 llm_api_key=llm_api_key,
                 llm_base_url=llm_base_url,
                 llm_model=llm_model,
-                analysis_api_key=analysis_api_key
+                analysis_api_key=analysis_api_key,
+                preview_max_rows=preview_max_rows,
+                preview_max_cols=preview_max_cols
             ):
                 # 流式输出每个块
                 yield self.create_stream_variable_message('stream_output', chunk)
